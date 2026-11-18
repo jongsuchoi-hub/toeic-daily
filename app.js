@@ -2,20 +2,22 @@
   const STORE = "toeic800.v1";
   const LETTERS = ["A", "B", "C", "D"];
   const SECTIONS = {
-    vocab: { name: "빈출 단어", sub: "10단어 뜻 고르기" },
-    p5: { name: "문법 · Part 5", sub: "빈칸 10문제" },
-    p2: { name: "듣기 · Part 2", sub: "질문-응답 5문제" },
-    p7: { name: "독해 · Part 7", sub: "지문 1개" },
+    vocab: { name: "빈출 단어", short: "단어", sub: "10단어 뜻 고르기" },
+    p5: { name: "문법 · Part 5", short: "문법", sub: "빈칸 10문제" },
+    p2: { name: "듣기 · Part 2", short: "듣기", sub: "질문-응답 5문제" },
+    p7: { name: "독해 · Part 7", short: "독해", sub: "지문 1개" },
   };
+  // 이 날짜가 1일째. 문제는 쌓인 순서대로 하루치씩 넘어가고, 다 쓰면 처음으로 돌아갑니다.
+  const START = Date.UTC(2026, 10, 18) / 86400000;
   const $app = document.getElementById("app");
 
   // ---------- 저장 ----------
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(STORE));
-      if (s && s.log && s.wrong) return s;
+      if (s && s.log && s.wrong) { s.tags = s.tags || {}; return s; }
     } catch (e) {}
-    return { log: {}, wrong: {} };
+    return { log: {}, wrong: {}, tags: {} };
   }
   let state = load();
   function save() {
@@ -27,12 +29,9 @@
     const p = (n) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
-  function dayNum(d) {
-    return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
-  }
   const today = new Date();
   const TODAY = dateKey(today);
-  const DAY = dayNum(today);
+  const DAY = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) / 86400000 - START;
 
   function streak() {
     let n = 0;
@@ -51,12 +50,15 @@
     }
     return a;
   }
+  // 뜻이 겹치는 단어(예: 상당한)는 오답 보기로 쓰지 않습니다
+  const senses = (m) => m.replace(/\([^)]*\)/g, "").split(/[,;]/).map((x) => x.trim()).filter(Boolean);
   function vocabQ(i) {
-    const [word, meaning, ex] = VOCAB[i];
-    const others = shuffle(VOCAB.filter((_, k) => k !== i).map((v) => v[1])).slice(0, 3);
-    const choices = shuffle([meaning, ...others]);
-    return { key: "v-" + i, kind: "vocab", word, ex, choices, answer: choices.indexOf(meaning),
-      explain: `${word} = ${meaning}` };
+    const [word, meaning] = VOCAB[i];
+    const mine = senses(meaning);
+    const pool = VOCAB.filter((v, k) => k !== i && !senses(v[1]).some((s) => mine.includes(s))).map((v) => v[1]);
+    const choices = shuffle([meaning, ...shuffle(pool).slice(0, 3)]);
+    return { key: "v-" + i, kind: "vocab", tag: "단어", word, ex: VOCAB[i][2], choices,
+      answer: choices.indexOf(meaning), explain: `${word} = ${meaning}` };
   }
   // 보기 순서를 섞고, 해설 속 (A)(B) 글자도 새 순서에 맞춰 바꿉니다
   function mix(choices, answer, explain) {
@@ -72,12 +74,12 @@
     return { key: "p5-" + i, kind: "p5", sentence: s, tag, ...mix(choices, answer, explain) };
   }
   function p2Q(i) {
-    const [q, choices, answer, explain] = PART2[i];
-    return { key: "p2-" + i, kind: "p2", q, ...mix(choices, answer, explain) };
+    const [q, choices, answer, explain, tag] = PART2[i];
+    return { key: "p2-" + i, kind: "p2", q, tag, ...mix(choices, answer, explain) };
   }
   function p7Q(p, j) {
-    const [q, choices, answer, explain] = PART7[p].qs[j];
-    return { key: `p7-${p}-${j}`, kind: "p7", p, q, ...mix(choices, answer, explain) };
+    const [q, choices, answer, explain, tag] = PART7[p].qs[j];
+    return { key: `p7-${p}-${j}`, kind: "p7", p, q, tag, ...mix(choices, answer, explain) };
   }
   function fromKey(key) {
     const [k, a, b] = key.split("-");
@@ -87,16 +89,22 @@
     if (k === "p7") return PART7[+a] && PART7[+a].qs[+b] ? p7Q(+a, +b) : null;
     return null;
   }
+  const mod = (x, n) => ((x % n) + n) % n;
   function range(start, count, len) {
-    return Array.from({ length: count }, (_, k) => (start + k) % len);
+    return Array.from({ length: count }, (_, k) => mod(start + k, len));
   }
   function todaySet(sec) {
-    if (sec === "vocab") return range((DAY * 10) % VOCAB.length, 10, VOCAB.length).map(vocabQ);
-    if (sec === "p5") return range((DAY * 10) % PART5.length, 10, PART5.length).map(p5Q);
-    if (sec === "p2") return range((DAY * 5) % PART2.length, 5, PART2.length).map(p2Q);
-    const p = DAY % PART7.length;
+    if (sec === "vocab") return range(DAY * 10, 10, VOCAB.length).map(vocabQ);
+    if (sec === "p5") return range(DAY * 10, 10, PART5.length).map(p5Q);
+    if (sec === "p2") return range(DAY * 5, 5, PART2.length).map(p2Q);
+    const p = mod(DAY, PART7.length);
     return PART7[p].qs.map((_, j) => p7Q(p, j));
   }
+  const groupOf = (q) => `${q.kind}:${q.tag}`;
+  const groupName = (g) => {
+    const [kind, tag] = g.split(":");
+    return kind === "vocab" ? "단어" : `${SECTIONS[kind].short} · ${tag}`;
+  };
 
   // ---------- 음성 ----------
   let voice = null;
@@ -136,8 +144,8 @@
     const done = Object.keys(SECTIONS).filter((s) => log[s]).length;
     const wrongN = Object.keys(state.wrong).filter(fromKey).length;
     const st = streak();
+    const weak = weakGroups().filter((g) => g.wrong > 0)[0];
 
-    // 최근 7일
     const days = [];
     for (let k = 6; k >= 0; k--) {
       const d = new Date(today); d.setDate(d.getDate() - k);
@@ -145,7 +153,6 @@
       const n = Object.keys(SECTIONS).filter((s) => l[s]).length;
       days.push({ label: ["일", "월", "화", "수", "목", "금", "토"][d.getDay()], n, isToday: k === 0 });
     }
-    // 누적 정답률
     const tot = {};
     Object.values(state.log).forEach((l) => Object.entries(l).forEach(([s, [c, t]]) => {
       tot[s] = tot[s] || [0, 0]; tot[s][0] += c; tot[s][1] += t;
@@ -174,7 +181,10 @@
         }).join("")}
       </section>
 
-      <button class="wide ${wrongN ? "" : "ghost"}" id="wrong">오답 노트 <b>${wrongN}</b></button>
+      <button class="wide ${wrongN ? "" : "ghost"}" id="wrong">
+        약점 노트 · 오답 <b>${wrongN}</b>
+        ${weak ? `<span class="sub">가장 약한 유형: ${esc(groupName(weak.g))}</span>` : ""}
+      </button>
 
       <section class="panel">
         <h2>최근 7일</h2>
@@ -190,44 +200,76 @@
         }).join("")}</ul>
       </section>
 
-      <p class="foot">직접 만든 연습문제입니다(실제 기출 아님). 기록은 이 브라우저에만 저장됩니다.</p>
+      <p class="foot">직접 만든 연습문제입니다(실제 기출 아님). 기록은 이 브라우저에만 저장됩니다.<br>
+        문제 수: 단어 ${VOCAB.length} · 문법 ${PART5.length} · 듣기 ${PART2.length} · 지문 ${PART7.length}</p>
     `;
     $app.querySelectorAll("[data-sec]").forEach((b) =>
       b.addEventListener("click", () => quiz(todaySet(b.dataset.sec), { sec: b.dataset.sec })));
-    document.getElementById("wrong").addEventListener("click", wrongNote);
+    document.getElementById("wrong").addEventListener("click", weakNote);
     window.scrollTo(0, 0);
   }
 
-  function wrongNote() {
+  // 유형별로 묶기: 오답 수가 많고 정답률이 낮은 유형이 위로
+  function weakGroups() {
     const items = Object.keys(state.wrong).map(fromKey).filter(Boolean);
-    const label = { vocab: "단어", p5: "문법", p2: "듣기", p7: "독해" };
+    const g = {};
+    Object.entries(state.tags).forEach(([k, [c, t]]) => { g[k] = { g: k, c, t, items: [] }; });
+    items.forEach((q) => {
+      const k = groupOf(q);
+      g[k] = g[k] || { g: k, c: 0, t: 0, items: [] };
+      g[k].items.push(q);
+    });
+    return Object.values(g)
+      .map((x) => ({ ...x, wrong: x.items.length, pct: x.t ? Math.round((x.c / x.t) * 100) : null }))
+      .sort((a, b) => b.wrong - a.wrong || (a.pct ?? 101) - (b.pct ?? 101));
+  }
+
+  function weakNote() {
+    const groups = weakGroups();
+    const all = groups.flatMap((x) => x.items);
     $app.innerHTML = `
       <header class="top"><button class="back" id="back">← 처음으로</button></header>
-      <h1>오답 노트</h1>
-      ${items.length ? `<button class="wide" id="redo">틀린 ${items.length}문제 다시 풀기</button>
-        <p class="muted small">다시 풀어서 맞히면 노트에서 빠집니다.</p>` :
-        `<p class="muted">아직 틀린 문제가 없습니다.</p>`}
-      <ul class="notes">${items.map((q) => {
-        const head = q.kind === "vocab" ? `<b>${esc(q.word)}</b>` :
-          q.kind === "p5" ? esc(q.sentence) :
-          q.kind === "p2" ? esc(q.q) : esc(q.q);
-        return `<li><span class="tag">${label[q.kind]}</span> ${head}
-          <div class="ans">정답 ${q.kind === "vocab" ? "" : `(${LETTERS[q.answer]}) `}${esc(q.choices[q.answer])}</div>
-          <div class="exp">${esc(q.explain)}</div>
-          <button class="mini" data-del="${q.key}">외웠어요</button></li>`;
-      }).join("")}</ul>`;
+      <h1>약점 노트</h1>
+      <p class="muted small">틀린 문제를 유형별로 묶었습니다. 오답이 많은 유형부터 보입니다. 다시 풀어 맞히면 노트에서 빠집니다.</p>
+      ${groups.length ? "" : `<p class="muted">아직 푼 문제가 없습니다. 오늘의 문제부터 풀어 보세요.</p>`}
+      ${all.length ? `<button class="wide" id="redoAll">오답 ${all.length}문제 전부 다시 풀기</button>` : ""}
+      <ul class="groups">${groups.map((x, gi) => `
+        <li class="group ${x.wrong ? "" : "clear"}">
+          <div class="ghead">
+            <div>
+              <b>${esc(groupName(x.g))}</b>
+              <span class="muted small">${x.t ? `정답률 ${x.pct}% (${x.c}/${x.t})` : "기록 없음"}</span>
+            </div>
+            ${x.wrong ? `<button class="mini strong" data-redo="${gi}">${x.wrong}문제 다시 풀기</button>` : `<span class="okmark">오답 없음</span>`}
+          </div>
+          ${x.t ? `<span class="accbar"><i style="width:${x.pct}%"></i></span>` : ""}
+          ${x.wrong ? `<details><summary>틀린 문제 보기</summary>
+            <ul class="notes">${x.items.map((q) => {
+              const head = q.kind === "vocab" ? `<b>${esc(q.word)}</b>` : q.kind === "p5" ? esc(q.sentence) : esc(q.q);
+              return `<li>${head}
+                <div class="ans">정답: ${esc(q.choices[q.answer])}</div>
+                <div class="exp">${esc(q.explain)}</div>
+                <span class="muted small">${state.wrong[q.key].n}번 틀림</span>
+                <button class="mini" data-del="${q.key}">외웠어요</button></li>`;
+            }).join("")}</ul></details>` : ""}
+        </li>`).join("")}
+      </ul>`;
     document.getElementById("back").addEventListener("click", home);
-    const r = document.getElementById("redo");
-    if (r) r.addEventListener("click", () => quiz(shuffle(items), { review: true }));
+    const ra = document.getElementById("redoAll");
+    if (ra) ra.addEventListener("click", () => quiz(shuffle(all), { review: "오답 전부 다시 풀기" }));
+    $app.querySelectorAll("[data-redo]").forEach((b) => b.addEventListener("click", () => {
+      const x = groups[+b.dataset.redo];
+      quiz(shuffle(x.items), { review: groupName(x.g) });
+    }));
     $app.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => {
-      delete state.wrong[b.dataset.del]; save(); wrongNote();
+      delete state.wrong[b.dataset.del]; save(); weakNote();
     }));
     window.scrollTo(0, 0);
   }
 
   function quiz(qs, opt) {
     let i = 0, correct = 0;
-    const title = opt.review ? "오답 다시 풀기" : SECTIONS[opt.sec].name;
+    const title = opt.review || SECTIONS[opt.sec].name;
 
     function show(autoplay) {
       const q = qs[i];
@@ -239,14 +281,14 @@
       } else if (q.kind === "p5") {
         body = `<p class="tag">${esc(q.tag)}</p><p class="sent">${esc(q.sentence).replace("------", '<span class="blank">______</span>')}</p>`;
       } else if (q.kind === "p2") {
-        body = `<p class="ask">질문과 세 개의 응답을 듣고 가장 알맞은 응답을 고르세요.</p>
+        body = `<p class="tag">${esc(q.tag)}</p><p class="ask">질문과 세 개의 응답을 듣고 가장 알맞은 응답을 고르세요.</p>
           <button class="play" id="play">▶ 듣기</button>
           <button class="link" id="script">음성이 안 나오면 대본 보기</button>
           <div class="script" id="scr" hidden>${p2Lines(q).map(esc).join("<br>")}</div>`;
       } else {
         const P = PART7[q.p];
         body = `<div class="passage"><p class="ptitle">${esc(P.title)}</p>${nl(P.text)}</div>
-          <p class="sent">${esc(q.q)}</p>`;
+          <p class="tag">${esc(q.tag)}</p><p class="sent">${esc(q.q)}</p>`;
       }
       const choiceText = (c) => q.kind === "p2" ? "" : esc(c);
       $app.innerHTML = `
@@ -277,6 +319,9 @@
       const q = qs[i];
       const ok = k === q.answer;
       if (ok) correct++;
+      const g = groupOf(q);
+      state.tags[g] = state.tags[g] || [0, 0];
+      state.tags[g][1]++; if (ok) state.tags[g][0]++;
       if (ok && opt.review) delete state.wrong[q.key];
       if (!ok) state.wrong[q.key] = { n: ((state.wrong[q.key] || {}).n || 0) + 1, last: TODAY };
       save();
@@ -319,12 +364,15 @@
         <div class="result">
           <p class="eyebrow">${esc(title)}</p>
           <div class="big">${correct} <span>/ ${qs.length}</span></div>
-          <p>${pct}% 정답${correct < qs.length ? " · 틀린 문제는 오답 노트에 담았습니다." : ""}</p>
+          <p>${pct}% 정답${correct < qs.length && !opt.review ? " · 틀린 문제는 약점 노트에 담았습니다." : ""}</p>
           ${!opt.review && left.length ? `<button class="wide" id="go">다음: ${SECTIONS[left[0]].name} →</button>` : ""}
+          ${opt.review ? `<button class="wide" id="note">약점 노트로</button>` : ""}
           <button class="wide ghost" id="home">처음으로</button>
         </div>`;
       const go = document.getElementById("go");
       if (go) go.addEventListener("click", () => quiz(todaySet(left[0]), { sec: left[0] }));
+      const nt = document.getElementById("note");
+      if (nt) nt.addEventListener("click", weakNote);
       document.getElementById("home").addEventListener("click", home);
       window.scrollTo(0, 0);
     }
