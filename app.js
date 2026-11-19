@@ -15,9 +15,9 @@
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(STORE));
-      if (s && s.log && s.wrong) { s.tags = s.tags || {}; s.progress = s.progress || {}; return s; }
+      if (s && s.log && s.wrong) { s.tags = s.tags || {}; s.progress = s.progress || {}; s.srs = s.srs || {}; s.seen = s.seen || {}; return s; }
     } catch (e) {}
-    return { log: {}, wrong: {}, tags: {}, progress: {} };
+    return { log: {}, wrong: {}, tags: {}, progress: {}, srs: {}, seen: {} };
   }
   let state = load();
   function save() {
@@ -32,6 +32,17 @@
   const today = new Date();
   const TODAY = dateKey(today);
   const DAY = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) / 86400000 - START;
+
+  function addDays(key, n) {
+    const [y, m, d] = key.split("-").map(Number);
+    return dateKey(new Date(y, m - 1, d + n));
+  }
+
+  // ---------- 간격 반복 복습 ----------
+  // 틀린 문제는 1일 뒤 → 맞히면 3일 → 7일 → 14일 → 30일 뒤에 다시 나오고, 그것까지 맞히면 졸업합니다.
+  const STEPS = [1, 3, 7, 14, 30];
+  // 이 기능 전에 틀려 둔 문제는 오늘 복습으로 넣습니다
+  Object.keys(state.wrong).forEach((k) => { if (!state.srs[k]) state.srs[k] = { box: 0, due: TODAY }; });
 
   function streak() {
     let n = 0;
@@ -95,8 +106,14 @@
   }
   function todaySet(sec) {
     if (sec === "vocab") return range(DAY * 10, 10, VOCAB.length).map(vocabQ);
-    if (sec === "p5") return range(DAY * 10, 10, PART5.length).map(p5Q);
-    if (sec === "p2") return range(DAY * 5, 5, PART2.length).map(p2Q);
+    if (sec === "p5") {
+      const idx = range(DAY * 10, 10, PART5.length);
+      return [...idx.map(p5Q), ...focusExtra("p5", PART5, 3, p5Q, idx)];
+    }
+    if (sec === "p2") {
+      const idx = range(DAY * 5, 5, PART2.length);
+      return [...idx.map(p2Q), ...focusExtra("p2", PART2, 4, p2Q, idx)];
+    }
     const p = mod(DAY, PART7.length);
     return PART7[p].qs.map((_, j) => p7Q(p, j));
   }
@@ -109,6 +126,30 @@
     const p = saved(sec);
     if (p) quiz(p.qs, p.opt, p);
     else quiz(todaySet(sec), { sec });
+  }
+  function dueKeys() {
+    return Object.entries(state.srs)
+      .filter(([k, v]) => v.due <= TODAY && fromKey(k))
+      .sort((a, b) => a[1].due.localeCompare(b[1].due))
+      .map(([k]) => k);
+  }
+  const srsSet = () => dueKeys().slice(0, 15).map(fromKey);
+  function nextDue() {
+    const later = Object.values(state.srs).filter((v) => v.due > TODAY).map((v) => v.due).sort();
+    return later.length ? { date: later[0], n: later.filter((d) => d === later[0]).length } : null;
+  }
+  // 정답률이 70% 아래인 가장 약한 유형에서, 아직 안 본 문제를 3개 더 얹습니다
+  function focusExtra(kind, list, tagAt, make, taken) {
+    let worst = null;
+    Object.entries(state.tags).forEach(([g, [c, t]]) => {
+      const [k, tag] = g.split(":");
+      if (k !== kind || t < 4 || c / t >= 0.7) return;
+      if (!worst || c / t < worst.r) worst = { tag, r: c / t };
+    });
+    if (!worst) return [];
+    const pool = list.map((_, i) => i)
+      .filter((i) => list[i][tagAt] === worst.tag && !taken.includes(i) && !state.seen[`${kind}-${i}`]);
+    return shuffle(pool).slice(0, 3).map((i) => ({ ...make(i), focus: true }));
   }
   const groupOf = (q) => `${q.kind}:${q.tag}`;
   const groupName = (g) => {
@@ -180,6 +221,8 @@
       <div class="bar"><i style="width:${done * 25}%"></i></div>
       <p class="muted small">${done === 4 ? "오늘 분량을 다 하셨습니다." : `오늘 ${done} / 4 완료`}</p>
 
+      ${srsCard(log)}
+
       <section class="cards">
         ${Object.entries(SECTIONS).map(([s, v]) => {
           const r = log[s];
@@ -214,12 +257,31 @@
       </section>
 
       <p class="foot">직접 만든 연습문제입니다(실제 기출 아님). 기록은 이 브라우저에만 저장됩니다.<br>
+        문법·듣기는 정답률 70% 아래인 유형에서 3문제를 더 냅니다.<br>
         문제 수: 단어 ${VOCAB.length} · 문법 ${PART5.length} · 듣기 ${PART2.length} · 지문 ${PART7.length}</p>
     `;
     $app.querySelectorAll("[data-sec]").forEach((b) =>
       b.addEventListener("click", () => start(b.dataset.sec)));
     document.getElementById("wrong").addEventListener("click", weakNote);
+    const sb = document.getElementById("srs");
+    if (sb) sb.addEventListener("click", () => {
+      const p = saved("srs");
+      if (p) quiz(p.qs, p.opt, p);
+      else quiz(srsSet(), { review: "오늘의 복습", srs: true });
+    });
     window.scrollTo(0, 0);
+  }
+
+  function srsCard(log) {
+    const due = dueKeys().length;
+    const p = saved("srs");
+    const why = "틀린 문제가 1·3·7·14·30일 간격으로 다시 나옵니다. 다섯 번 통과하면 졸업.";
+    if (p) return `<button class="wide" id="srs">오늘의 복습 · 이어서 하기 ${p.i + (p.picked == null ? 0 : 1)}/${p.qs.length}<span class="sub">${why}</span></button>`;
+    if (due) return `<button class="wide" id="srs">오늘의 복습 <b>${Math.min(due, 15)}</b>문제${due > 15 ? ` (밀린 ${due - 15}문제는 다음에)` : ""}<span class="sub">${why}</span></button>`;
+    const nx = nextDue();
+    const [, m, d] = nx ? nx.date.split("-").map(Number) : [];
+    return `<div class="wide ghost static">${log.srs ? "✓ 오늘 복습 완료" : "오늘 복습할 문제 없음"}
+      <span class="sub">${nx ? `다음 복습: ${m}월 ${d}일 · ${nx.n}문제` : why}</span></div>`;
   }
 
   // 유형별로 묶기: 오답 수가 많고 정답률이 낮은 유형이 위로
@@ -278,7 +340,7 @@
       quiz(shuffle(x.items), { review: groupName(x.g) });
     }));
     $app.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => {
-      delete state.wrong[b.dataset.del]; save(); weakNote();
+      delete state.wrong[b.dataset.del]; delete state.srs[b.dataset.del]; save(); weakNote();
     }));
     window.scrollTo(0, 0);
   }
@@ -286,7 +348,7 @@
   function quiz(qs, opt, resume) {
     let i = resume ? resume.i : 0, correct = resume ? resume.correct : 0;
     const title = opt.review || SECTIONS[opt.sec].name;
-    const pkey = opt.review ? "review" : opt.sec;
+    const pkey = opt.srs ? "srs" : opt.review ? "review" : opt.sec;
     // 한 문제마다 자동 저장: 어느 문제까지 왔는지, 지금 문제에서 무엇을 골랐는지
     function keep(picked) {
       state.progress[pkey] = { date: TODAY, qs, i, correct, opt, picked };
@@ -312,6 +374,7 @@
         body = `<div class="passage"><p class="ptitle">${esc(P.title)}</p>${nl(P.text)}</div>
           <p class="tag">${esc(q.tag)}</p><p class="sent">${esc(q.q)}</p>`;
       }
+      if (q.focus) body = `<p class="focus">약점 집중 · 정답률이 낮은 유형에서 더 나온 문제</p>` + body;
       const choiceText = (c) => q.kind === "p2" ? "" : esc(c);
       $app.innerHTML = `
         <header class="top"><button class="back" id="back">← 그만하기 · 자동 저장</button>
@@ -348,6 +411,14 @@
         state.tags[g][1]++; if (ok) state.tags[g][0]++;
         if (ok && opt.review) delete state.wrong[q.key];
         if (!ok) state.wrong[q.key] = { n: ((state.wrong[q.key] || {}).n || 0) + 1, last: TODAY };
+        state.seen[q.key] = 1;
+        const r = state.srs[q.key];
+        if (!ok) { state.srs[q.key] = { box: 0, due: addDays(TODAY, STEPS[0]) }; q.next = "내일 복습에 다시 나옵니다."; }
+        else if (r && r.due <= TODAY) { // 복습할 날에 맞혔을 때만 다음 간격으로
+          const box = r.box + 1;
+          if (box >= STEPS.length) { delete state.srs[q.key]; delete state.wrong[q.key]; q.next = "간격 복습 다섯 번 통과 · 졸업입니다."; }
+          else { state.srs[q.key] = { box, due: addDays(TODAY, STEPS[box]) }; q.next = `다음 복습은 ${STEPS[box]}일 뒤입니다.`; }
+        }
         keep(k);
       }
       $app.querySelectorAll(".choice").forEach((b) => {
@@ -367,6 +438,7 @@
         <div class="fb ${ok ? "ok" : "no"}">
           <b>${ok ? "정답입니다" : `오답 · 정답은 (${LETTERS[q.answer]})`}</b>
           <p>${esc(q.explain)}</p>
+          ${q.next ? `<p class="next">${esc(q.next)}</p>` : ""}
         </div>
         <button class="wide" id="next">${last ? "결과 보기" : "다음 →"}</button>`;
       document.getElementById("next").addEventListener("click", () => {
@@ -380,9 +452,9 @@
       if ("speechSynthesis" in window) speechSynthesis.cancel();
       delete state.progress[pkey];
       save();
-      if (!opt.review) {
+      if (!opt.review || opt.srs) {
         state.log[TODAY] = state.log[TODAY] || {};
-        state.log[TODAY][opt.sec] = [correct, qs.length];
+        state.log[TODAY][opt.srs ? "srs" : opt.sec] = [correct, qs.length];
         save();
       }
       const pct = Math.round((correct / qs.length) * 100);
@@ -391,7 +463,7 @@
         <div class="result">
           <p class="eyebrow">${esc(title)}</p>
           <div class="big">${correct} <span>/ ${qs.length}</span></div>
-          <p>${pct}% 정답${correct < qs.length && !opt.review ? " · 틀린 문제는 약점 노트에 담았습니다." : ""}</p>
+          <p>${pct}% 정답${correct < qs.length ? " · 틀린 문제는 내일 복습에 다시 나옵니다." : ""}</p>
           ${!opt.review && left.length ? `<button class="wide" id="go">다음: ${SECTIONS[left[0]].name} →</button>` : ""}
           ${opt.review ? `<button class="wide" id="note">약점 노트로</button>` : ""}
           <button class="wide ghost" id="home">처음으로</button>
