@@ -15,9 +15,9 @@
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(STORE));
-      if (s && s.log && s.wrong) { s.tags = s.tags || {}; return s; }
+      if (s && s.log && s.wrong) { s.tags = s.tags || {}; s.progress = s.progress || {}; return s; }
     } catch (e) {}
-    return { log: {}, wrong: {}, tags: {} };
+    return { log: {}, wrong: {}, tags: {}, progress: {} };
   }
   let state = load();
   function save() {
@@ -100,6 +100,16 @@
     const p = mod(DAY, PART7.length);
     return PART7[p].qs.map((_, j) => p7Q(p, j));
   }
+  // 풀다 만 곳: 영역별(오답 다시 풀기는 review)로 오늘 것만 이어 갑니다
+  function saved(key) {
+    const p = state.progress[key];
+    return p && p.date === TODAY && p.i < p.qs.length ? p : null;
+  }
+  function start(sec) {
+    const p = saved(sec);
+    if (p) quiz(p.qs, p.opt, p);
+    else quiz(todaySet(sec), { sec });
+  }
   const groupOf = (q) => `${q.kind}:${q.tag}`;
   const groupName = (g) => {
     const [kind, tag] = g.split(":");
@@ -173,10 +183,13 @@
       <section class="cards">
         ${Object.entries(SECTIONS).map(([s, v]) => {
           const r = log[s];
-          return `<button class="card ${r ? "done" : ""}" data-sec="${s}">
+          const p = saved(s);
+          const label = p ? `이어서 하기 · ${p.i + (p.picked == null ? 0 : 1)}/${p.qs.length} →`
+            : r ? `✓ ${r[0]}/${r[1]} 정답 · 다시` : "시작 →";
+          return `<button class="card ${r && !p ? "done" : ""} ${p ? "going" : ""}" data-sec="${s}">
             <span class="card-t">${v.name}</span>
             <span class="card-s">${v.sub}</span>
-            <span class="card-r">${r ? `✓ ${r[0]}/${r[1]} 정답 · 다시` : "시작 →"}</span>
+            <span class="card-r">${label}</span>
           </button>`;
         }).join("")}
       </section>
@@ -204,7 +217,7 @@
         문제 수: 단어 ${VOCAB.length} · 문법 ${PART5.length} · 듣기 ${PART2.length} · 지문 ${PART7.length}</p>
     `;
     $app.querySelectorAll("[data-sec]").forEach((b) =>
-      b.addEventListener("click", () => quiz(todaySet(b.dataset.sec), { sec: b.dataset.sec })));
+      b.addEventListener("click", () => start(b.dataset.sec)));
     document.getElementById("wrong").addEventListener("click", weakNote);
     window.scrollTo(0, 0);
   }
@@ -232,7 +245,8 @@
       <h1>약점 노트</h1>
       <p class="muted small">틀린 문제를 유형별로 묶었습니다. 오답이 많은 유형부터 보입니다. 다시 풀어 맞히면 노트에서 빠집니다.</p>
       ${groups.length ? "" : `<p class="muted">아직 푼 문제가 없습니다. 오늘의 문제부터 풀어 보세요.</p>`}
-      ${all.length ? `<button class="wide" id="redoAll">오답 ${all.length}문제 전부 다시 풀기</button>` : ""}
+      ${saved("review") ? `<button class="wide" id="resume">이어서 풀기 · ${esc(saved("review").opt.review)} (${saved("review").i + 1}/${saved("review").qs.length})</button>` : ""}
+      ${all.length ? `<button class="wide ${saved("review") ? "ghost" : ""}" id="redoAll">오답 ${all.length}문제 전부 다시 풀기</button>` : ""}
       <ul class="groups">${groups.map((x, gi) => `
         <li class="group ${x.wrong ? "" : "clear"}">
           <div class="ghead">
@@ -255,6 +269,8 @@
         </li>`).join("")}
       </ul>`;
     document.getElementById("back").addEventListener("click", home);
+    const rs = document.getElementById("resume");
+    if (rs) rs.addEventListener("click", () => { const p = saved("review"); quiz(p.qs, p.opt, p); });
     const ra = document.getElementById("redoAll");
     if (ra) ra.addEventListener("click", () => quiz(shuffle(all), { review: "오답 전부 다시 풀기" }));
     $app.querySelectorAll("[data-redo]").forEach((b) => b.addEventListener("click", () => {
@@ -267,9 +283,15 @@
     window.scrollTo(0, 0);
   }
 
-  function quiz(qs, opt) {
-    let i = 0, correct = 0;
+  function quiz(qs, opt, resume) {
+    let i = resume ? resume.i : 0, correct = resume ? resume.correct : 0;
     const title = opt.review || SECTIONS[opt.sec].name;
+    const pkey = opt.review ? "review" : opt.sec;
+    // 한 문제마다 자동 저장: 어느 문제까지 왔는지, 지금 문제에서 무엇을 골랐는지
+    function keep(picked) {
+      state.progress[pkey] = { date: TODAY, qs, i, correct, opt, picked };
+      save();
+    }
 
     function show(autoplay) {
       const q = qs[i];
@@ -292,7 +314,7 @@
       }
       const choiceText = (c) => q.kind === "p2" ? "" : esc(c);
       $app.innerHTML = `
-        <header class="top"><button class="back" id="back">← 그만하기</button>
+        <header class="top"><button class="back" id="back">← 그만하기 · 자동 저장</button>
           <span class="muted small">${esc(title)} · ${i + 1} / ${qs.length}</span></header>
         <div class="bar"><i style="width:${(i / qs.length) * 100}%"></i></div>
         <article class="q">${body}</article>
@@ -313,18 +335,21 @@
       }
       $app.querySelectorAll(".choice").forEach((b) => b.addEventListener("click", () => pick(+b.dataset.k)));
       window.scrollTo(0, 0);
+      keep(null);
     }
 
-    function pick(k) {
+    function pick(k, restoring) {
       const q = qs[i];
       const ok = k === q.answer;
-      if (ok) correct++;
-      const g = groupOf(q);
-      state.tags[g] = state.tags[g] || [0, 0];
-      state.tags[g][1]++; if (ok) state.tags[g][0]++;
-      if (ok && opt.review) delete state.wrong[q.key];
-      if (!ok) state.wrong[q.key] = { n: ((state.wrong[q.key] || {}).n || 0) + 1, last: TODAY };
-      save();
+      if (!restoring) { // 이어서 열 때는 이미 센 점수를 다시 세지 않습니다
+        if (ok) correct++;
+        const g = groupOf(q);
+        state.tags[g] = state.tags[g] || [0, 0];
+        state.tags[g][1]++; if (ok) state.tags[g][0]++;
+        if (ok && opt.review) delete state.wrong[q.key];
+        if (!ok) state.wrong[q.key] = { n: ((state.wrong[q.key] || {}).n || 0) + 1, last: TODAY };
+        keep(k);
+      }
       $app.querySelectorAll(".choice").forEach((b) => {
         const kk = +b.dataset.k;
         b.disabled = true;
@@ -348,11 +373,13 @@
         if (last) return finish();
         i++; show(true);
       });
-      document.getElementById("next").scrollIntoView({ block: "nearest", behavior: "smooth" });
+      if (!restoring) document.getElementById("next").scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
 
     function finish() {
       if ("speechSynthesis" in window) speechSynthesis.cancel();
+      delete state.progress[pkey];
+      save();
       if (!opt.review) {
         state.log[TODAY] = state.log[TODAY] || {};
         state.log[TODAY][opt.sec] = [correct, qs.length];
@@ -370,7 +397,7 @@
           <button class="wide ghost" id="home">처음으로</button>
         </div>`;
       const go = document.getElementById("go");
-      if (go) go.addEventListener("click", () => quiz(todaySet(left[0]), { sec: left[0] }));
+      if (go) go.addEventListener("click", () => start(left[0]));
       const nt = document.getElementById("note");
       if (nt) nt.addEventListener("click", weakNote);
       document.getElementById("home").addEventListener("click", home);
@@ -379,6 +406,7 @@
 
     if (!qs.length) return home();
     show(false);
+    if (resume && resume.picked != null) pick(resume.picked, true);
   }
 
   home();
