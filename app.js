@@ -6,9 +6,11 @@
     p5: { name: "문법 · Part 5", short: "문법", sub: "빈칸 10문제" },
     p2: { name: "듣기 · Part 2", short: "듣기", sub: "질문-응답 5문제" },
     p7: { name: "독해 · Part 7", short: "독해", sub: "지문 1개" },
+    p34: { name: "듣기 · Part 3·4", short: "대화·담화", sub: "대화 1개 + 담화 1개 (6문제)" },
   };
   // 이 날짜가 1일째. 문제는 쌓인 순서대로 하루치씩 넘어가고, 다 쓰면 처음으로 돌아갑니다.
   const START = Date.UTC(2026, 10, 18) / 86400000;
+  const KIND = { vocab: "단어", p5: "문법", p2: "듣기 P2", p3: "듣기 P3 대화", p4: "듣기 P4 담화", p7: "독해" };
   const $app = document.getElementById("app");
 
   // ---------- 저장 ----------
@@ -92,12 +94,22 @@
     const [q, choices, answer, explain, tag] = PART7[p].qs[j];
     return { key: `p7-${p}-${j}`, kind: "p7", p, q, tag, ...mix(choices, answer, explain) };
   }
+  function p3Q(n, j) {
+    const [q, choices, answer, explain, tag] = PART3[n].qs[j];
+    return { key: `p3-${n}-${j}`, kind: "p3", n, j, q, tag, ...mix(choices, answer, explain) };
+  }
+  function p4Q(n, j) {
+    const [q, choices, answer, explain, tag] = PART4[n].qs[j];
+    return { key: `p4-${n}-${j}`, kind: "p4", n, j, q, tag, ...mix(choices, answer, explain) };
+  }
   function fromKey(key) {
     const [k, a, b] = key.split("-");
     if (k === "v") return VOCAB[+a] ? vocabQ(+a) : null;
     if (k === "p5") return PART5[+a] ? p5Q(+a) : null;
     if (k === "p2") return PART2[+a] ? p2Q(+a) : null;
     if (k === "p7") return PART7[+a] && PART7[+a].qs[+b] ? p7Q(+a, +b) : null;
+    if (k === "p3") return PART3[+a] && PART3[+a].qs[+b] ? p3Q(+a, +b) : null;
+    if (k === "p4") return PART4[+a] && PART4[+a].qs[+b] ? p4Q(+a, +b) : null;
     return null;
   }
   const mod = (x, n) => ((x % n) + n) % n;
@@ -113,6 +125,10 @@
     if (sec === "p2") {
       const idx = range(DAY * 5, 5, PART2.length);
       return [...idx.map(p2Q), ...focusExtra("p2", PART2, 4, p2Q, idx)];
+    }
+    if (sec === "p34") {
+      const a = mod(DAY, PART3.length), c = mod(DAY, PART4.length);
+      return [...PART3[a].qs.map((_, j) => p3Q(a, j)), ...PART4[c].qs.map((_, j) => p4Q(c, j))];
     }
     const p = mod(DAY, PART7.length);
     return PART7[p].qs.map((_, j) => p7Q(p, j));
@@ -154,16 +170,40 @@
   const groupOf = (q) => `${q.kind}:${q.tag}`;
   const groupName = (g) => {
     const [kind, tag] = g.split(":");
-    return kind === "vocab" ? "단어" : `${SECTIONS[kind].short} · ${tag}`;
+    return kind === "vocab" ? "단어" : `${KIND[kind]} · ${tag}`;
   };
 
   // ---------- 음성 ----------
-  let voice = null;
+  let voice = null, voices = [];
   function pickVoice() {
     if (!("speechSynthesis" in window)) return;
     const vs = speechSynthesis.getVoices();
     voice = vs.find((v) => v.lang === "en-US") || vs.find((v) => /^en/i.test(v.lang)) || null;
+    // 화자마다 다른 영어 목소리(미국·영국·호주·캐나다 순서로 있는 것)를 씁니다
+    const en = vs.filter((v) => /^en/i.test(v.lang));
+    const order = ["en-US", "en-GB", "en-AU", "en-CA", "en-IE", "en-IN"];
+    voices = [];
+    order.forEach((l) => en.filter((v) => v.lang.replace("_", "-") === l).forEach((v) => voices.push(v)));
+    en.forEach((v) => { if (!voices.includes(v)) voices.push(v); });
   }
+  // 목소리가 하나뿐이어도 높낮이로 화자를 구분합니다
+  const PITCH = { W: 1.25, M: 0.8, M2: 0.65, W2: 1.4 };
+  const SLOT = { W: 0, M: 1, M2: 2, W2: 3 };
+  function talk(lines) {
+    if (!("speechSynthesis" in window)) return;
+    speechSynthesis.cancel();
+    lines.forEach(([who, text]) => {
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "en-US";
+      const v = voices.length ? voices[SLOT[who] % voices.length] : voice;
+      if (v) { u.voice = v; u.lang = v.lang; }
+      u.pitch = PITCH[who] || 1;
+      u.rate = 0.95;
+      speechSynthesis.speak(u);
+    });
+  }
+  const audioOf = (q) => q.kind === "p3" ? PART3[q.n].lines : [[PART4[q.n].speaker, PART4[q.n].text]];
+  const WHO = { W: "W", M: "M", M2: "M2", W2: "W2" };
   if ("speechSynthesis" in window) {
     pickVoice();
     speechSynthesis.onvoiceschanged = pickVoice;
@@ -192,6 +232,7 @@
   function home() {
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     const log = state.log[TODAY] || {};
+    const TOTAL = Object.keys(SECTIONS).length;
     const done = Object.keys(SECTIONS).filter((s) => log[s]).length;
     const wrongN = Object.keys(state.wrong).filter(fromKey).length;
     const st = streak();
@@ -202,7 +243,7 @@
       const d = new Date(today); d.setDate(d.getDate() - k);
       const l = state.log[dateKey(d)] || {};
       const n = Object.keys(SECTIONS).filter((s) => l[s]).length;
-      days.push({ label: ["일", "월", "화", "수", "목", "금", "토"][d.getDay()], n, isToday: k === 0 });
+      days.push({ label: ["일", "월", "화", "수", "목", "금", "토"][d.getDay()], n: Math.round((n / TOTAL) * 4), isToday: k === 0 });
     }
     const tot = {};
     Object.values(state.log).forEach((l) => Object.entries(l).forEach(([s, [c, t]]) => {
@@ -218,8 +259,8 @@
         <div class="streak"><b>${st}</b><span>일 연속</span></div>
       </header>
 
-      <div class="bar"><i style="width:${done * 25}%"></i></div>
-      <p class="muted small">${done === 4 ? "오늘 분량을 다 하셨습니다." : `오늘 ${done} / 4 완료`}</p>
+      <div class="bar"><i style="width:${(done / TOTAL) * 100}%"></i></div>
+      <p class="muted small">${done === TOTAL ? "오늘 분량을 다 하셨습니다." : `오늘 ${done} / ${TOTAL} 완료`}</p>
 
       ${srsCard(log)}
 
@@ -258,7 +299,7 @@
 
       <p class="foot">직접 만든 연습문제입니다(실제 기출 아님). 기록은 이 브라우저에만 저장됩니다.<br>
         문법·듣기는 정답률 70% 아래인 유형에서 3문제를 더 냅니다.<br>
-        문제 수: 단어 ${VOCAB.length} · 문법 ${PART5.length} · 듣기 ${PART2.length} · 지문 ${PART7.length}</p>
+        문제 수: 단어 ${VOCAB.length} · 문법 ${PART5.length} · 듣기 ${PART2.length} · 대화 ${PART3.length} · 담화 ${PART4.length} · 지문 ${PART7.length}</p>
     `;
     $app.querySelectorAll("[data-sec]").forEach((b) =>
       b.addEventListener("click", () => start(b.dataset.sec)));
@@ -321,7 +362,8 @@
           ${x.t ? `<span class="accbar"><i style="width:${x.pct}%"></i></span>` : ""}
           ${x.wrong ? `<details><summary>틀린 문제 보기</summary>
             <ul class="notes">${x.items.map((q) => {
-              const head = q.kind === "vocab" ? `<b>${esc(q.word)}</b>` : q.kind === "p5" ? esc(q.sentence) : esc(q.q);
+              const head = q.kind === "vocab" ? `<b>${esc(q.word)}</b>` : q.kind === "p5" ? esc(q.sentence)
+                : (q.kind === "p3" || q.kind === "p4") ? `${esc(q.q)}<div class="dialog">${audioOf(q).map(([w, t]) => `<p>${q.kind === "p3" ? `<b>${w}</b>` : ""}${esc(t)}</p>`).join("")}</div>` : esc(q.q);
               return `<li>${head}
                 <div class="ans">정답: ${esc(q.choices[q.answer])}</div>
                 <div class="exp">${esc(q.explain)}</div>
@@ -369,6 +411,15 @@
           <button class="play" id="play">▶ 듣기</button>
           <button class="link" id="script">음성이 안 나오면 대본 보기</button>
           <div class="script" id="scr" hidden>${p2Lines(q).map(esc).join("<br>")}</div>`;
+      } else if (q.kind === "p3" || q.kind === "p4") {
+        const first = q.j === 0 || !!opt.review; // 복습에서는 한 문제씩 따로 나오므로 늘 처음처럼
+        const label = q.kind === "p3" ? `Part 3 대화 · ${audioOf(q).some(([w]) => w === "M2" || w === "W2") ? "3명" : "2명"}` : `Part 4 · ${PART4[q.n].title}`;
+        body = `<p class="tag">${esc(label)}</p> <p class="tag">${esc(q.tag)}</p>
+          <p class="ask">${first ? `질문과 보기를 먼저 읽고, 듣기를 눌러 주세요.${opt.review ? "" : " 같은 음성으로 3문제를 풉니다."}` : `같은 ${q.kind === "p3" ? "대화" : "담화"}의 ${q.j + 1}번째 문제입니다.`}</p>
+          <button class="play" id="play">▶ ${first ? "듣기" : "다시 듣기"}</button>
+          <details id="scrbox"><summary>음성이 안 나오면 대본 보기</summary><div class="dialog">${audioOf(q).map(([w, t]) =>
+            `<p>${q.kind === "p3" ? `<b>${WHO[w]}</b>` : ""}${esc(t)}</p>`).join("")}</div></details>
+          <p class="sent">${esc(q.q)}</p>`;
       } else {
         const P = PART7[q.p];
         body = `<div class="passage"><p class="ptitle">${esc(P.title)}</p>${nl(P.text)}</div>
@@ -395,6 +446,10 @@
           document.getElementById("script").remove();
         });
         if (autoplay) speak(p2Lines(q));
+      }
+      if (q.kind === "p3" || q.kind === "p4") {
+        document.getElementById("play").addEventListener("click", () => talk(audioOf(q)));
+        if (autoplay && (q.j === 0 || opt.review)) talk(audioOf(q));
       }
       $app.querySelectorAll(".choice").forEach((b) => b.addEventListener("click", () => pick(+b.dataset.k)));
       window.scrollTo(0, 0);
@@ -428,6 +483,7 @@
         else if (kk === k) b.classList.add("wrong");
         if (q.kind === "p2") b.innerHTML = `<b>(${LETTERS[kk]})</b> ${esc(q.choices[kk])}`;
       });
+      if ((q.kind === "p3" || q.kind === "p4") && (q.j === 2 || opt.review)) document.getElementById("scrbox").open = true; // 세 문제를 다 풀면 대본을 펼쳐 줍니다
       if (q.kind === "p2") {
         const s = document.getElementById("scr");
         s.hidden = false; s.innerHTML = `<b>Q.</b> ${esc(q.q)}`;

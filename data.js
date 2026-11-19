@@ -190,3 +190,7 @@ const PART7 = [
     ],
   },
 ];
+
+// Part 3 대화, Part 4 담화는 m1-part3.js, m1-part4.js 등에서 채웁니다
+const PART3 = [];
+const PART4 = [];
